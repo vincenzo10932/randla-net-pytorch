@@ -1,7 +1,8 @@
 import os.path
 import random
 from collections import defaultdict
-import pickle
+import glob
+import json
 
 import torch
 import numpy as np
@@ -9,7 +10,7 @@ from scipy.spatial import cKDTree
 
 from torch.utils import data
 
-from .utils import read_metadata, rotate
+from .utils import rotate
 
 
 class RandlanetDataset(data.Dataset):
@@ -17,8 +18,63 @@ class RandlanetDataset(data.Dataset):
     def __init__(self, pc_path_list, **kwargs):
         self.cfg = kwargs
         self.size = 0
-        pc_labels = read_metadata(pc_path_list[0])['labels']
-        self.test = [-99.] == pc_labels
+
+        def _read_metadata_json(pc_dir):
+            meta_path = os.path.join(pc_dir, 'metadata', 'metadata.json')
+            if os.path.isfile(meta_path):
+                try:
+                    with open(meta_path, 'r') as f:
+                        return json.load(f)
+                except Exception:
+                    return None
+            return None
+
+        def _infer_pc_id_from_path(pc_dir):
+            base = os.path.basename(os.path.normpath(pc_dir))
+            if base.startswith('pc_id='):
+                try:
+                    return int(base.split('=')[1])
+                except Exception:
+                    pass
+            return abs(hash(base)) % (10 ** 9)
+
+        def _load_npz_from_dir(pc_dir):
+            file_pc = os.path.join(pc_dir, 'pc.npz')
+            xyz_list, rgb_list, lbl_list = [], [], []
+            if os.path.isfile(file_pc):
+                with np.load(file_pc) as data:
+                    xyz = data['xyz'].astype(np.float32)
+                    rgb = data['rgb']
+                    labels = data['labels'].reshape(-1)
+                xyz_list.append(xyz)
+                rgb_list.append(rgb)
+                lbl_list.append(labels)
+            else:
+                tile_files = sorted(glob.glob(os.path.join(pc_dir, '*.npz')))
+                if len(tile_files) == 0:
+                    raise FileNotFoundError(f"No NPZ files found in {pc_dir}")
+                for tf in tile_files:
+                    with np.load(tf) as data:
+                        if not {'xyz', 'rgb', 'labels'}.issubset(set(data.files)):
+                            continue
+                        xyz_list.append(data['xyz'].astype(np.float32))
+                        rgb_list.append(data['rgb'])
+                        lbl_list.append(data['labels'].reshape(-1))
+            xyz = np.concatenate(xyz_list, axis=0)
+            rgb = np.concatenate(rgb_list, axis=0)
+            labels = np.concatenate(lbl_list, axis=0)
+            return xyz, rgb, labels
+
+        # Determine base label set from first dataset folder
+        first_meta = _read_metadata_json(pc_path_list[0])
+        if first_meta and 'labels' in first_meta:
+            pc_labels = first_meta['labels']
+        else:
+            _, _, first_labels = _load_npz_from_dir(pc_path_list[0])
+            pc_labels = sorted(list(set(first_labels.astype(int).tolist())))
+
+        # Test mode flag
+        self.test = pc_labels == [-99.] or pc_labels == [-99]
         if self.test:
             assert len(pc_path_list) == 1, "Only one pc can be used as test"
             pc_labels = [-99.]
@@ -28,7 +84,12 @@ class RandlanetDataset(data.Dataset):
                 f"self.cfg['num_classes'] {self.cfg['num_classes']} is different" \
                 f"from len(pc_labels) {len(pc_labels)}"
             for pc_path in pc_path_list:
-                o_pc_labels = read_metadata(pc_path)['labels']
+                other_meta = _read_metadata_json(pc_path)
+                if other_meta and 'labels' in other_meta:
+                    o_pc_labels = other_meta['labels']
+                else:
+                    _, _, labels_other = _load_npz_from_dir(pc_path)
+                    o_pc_labels = sorted(list(set(labels_other.astype(int).tolist())))
                 assert set(o_pc_labels).issubset(set(pc_labels)), \
                     "Point clouds must be created considering a subset " \
                     "of labels from the first pc provided"
@@ -43,34 +104,33 @@ class RandlanetDataset(data.Dataset):
         self.n_points = 0
 
         for pc_path in pc_path_list:
-            with open(f"{pc_path}pc.pickle", "rb") as f:
-                pc = pickle.load(f)
-            metadata = read_metadata(pc_path)
-            pc_id = metadata["pc_id"]
-            pc_name = metadata["name"]
-            kdtree_f = f"{pc_path}/kdtree.pickle"
-            if os.path.isfile(kdtree_f):
-                with open(kdtree_f, 'rb') as f:
-                    kdtree = pickle.load(f)
-            else:
-                print(f"KDtree for pc {pc_id} {pc_name} not found, creating it")
-                kdtree = cKDTree(pc[:, :3], leafsize=50)
-                with open(kdtree_f, "wb") as f:
-                    pickle.dump(kdtree, f)
+            meta = _read_metadata_json(pc_path)
+            pc_id = (meta.get('pc_id') if meta and isinstance(meta.get('pc_id'), int)
+                     else _infer_pc_id_from_path(pc_path))
+            pc_name = (meta.get('name') if meta and isinstance(meta.get('name'), str)
+                       else os.path.basename(os.path.normpath(pc_path)))
+
+            xyz, rgb, labels = _load_npz_from_dir(pc_path)
+            print(f"KDtree for pc {pc_id} {pc_name} not found, creating it")
+            kdtree = cKDTree(xyz, leafsize=50)
             self.kdtrees[pc_id] = kdtree
-            self.colors[pc_id] = pc[:, 3:6]/255.
-            self.labels[pc_id] = pc[:, 6]
+
+            rgb = rgb.astype(np.float32)
+            if rgb.max() > 1.0:
+                rgb = rgb / 255.0
+            self.colors[pc_id] = rgb
+            self.labels[pc_id] = labels
             self.size += len(self.kdtrees[pc_id].data)
 
-            labels, counters = np.unique(self.labels[pc_id], return_counts=True)
+            labels_u, counters = np.unique(self.labels[pc_id], return_counts=True)
             self.pc_class_count[pc_id] = dict()
-            for label, counter in zip(labels, counters):
+            for label, counter in zip(labels_u, counters):
                 self.pc_class_count[pc_id][label] = counter
                 self.total_class_count[label] += counter
                 self.n_points += counter
 
         for label, counter in self.total_class_count.items():
-            self.total_class_weight[label] = counter/self.n_points
+            self.total_class_weight[label] = counter / self.n_points
 
     def __getitem__(self, _tuple):
         pc_id = _tuple[0]
@@ -82,7 +142,8 @@ class RandlanetDataset(data.Dataset):
         query_idx = self.kdtrees[pc_id].query(pick_point,
                                               k=self.cfg['num_points'])[1][0]
         # shuffle index inplace
-        random.shuffle(query_idx)
+        rng = np.random.default_rng()
+        rng.shuffle(query_idx)
 
         # Get corresponding points and colors based on the index
         queried_pc_xyz = points[query_idx]

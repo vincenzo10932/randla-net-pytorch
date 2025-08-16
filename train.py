@@ -1,7 +1,6 @@
 from model.testing import segment_randlanet
 from model.hyperparameters import hyp
 from model.training import train_randlanet_model
-from model.dataset_npz import RandlanetNpzDataset
 
 # Update these to your NPZ scene directories produced by preprocess_ply.py
 # Each directory can contain multiple tile .npz files with keys: xyz, rgb, labels
@@ -13,8 +12,7 @@ train_randlanet_model(train_set_list=train_dirs,
                       hyperpars=hyp,
                       use_mlflow=False,
                       num_workers=4,
-                      model_name="repo_example",
-                      dataset_cls=RandlanetNpzDataset)
+                      model_name="repo_example")
 
 
 # segment_randlanet("/data/saved_models/model_randlanet_all_pc_lr_sched/",

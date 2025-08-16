@@ -1,15 +1,20 @@
 from model.testing import segment_randlanet
 from model.hyperparameters import hyp
-from model.dataset import RandlanetDataset
 from model.training import train_randlanet_model
-# media/gabri/ext_ssd/nomoko
-# train_set = RandlanetDataset(["/media/gabri/ext_ssd/nomoko/datasets/full_pc/pc_id=39/"], **hyp)
-train_randlanet_model(train_set_list =["data/pc_id=636/"],
-                      test_set_list = ["data/pc_id=637/"],
+from model.dataset_npz import RandlanetNpzDataset
+
+# Update these to your NPZ scene directories produced by preprocess_ply.py
+# Each directory can contain multiple tile .npz files with keys: xyz, rgb, labels
+train_dirs = ["npz_dataset/pc_id=636/"]
+test_dirs = ["npz_dataset/pc_id=637/"]
+
+train_randlanet_model(train_set_list=train_dirs,
+                      test_set_list=test_dirs,
                       hyperpars=hyp,
                       use_mlflow=False,
                       num_workers=4,
-                      model_name="repo_example")
+                      model_name="repo_example",
+                      dataset_cls=RandlanetNpzDataset)
 
 
 # segment_randlanet("/data/saved_models/model_randlanet_all_pc_lr_sched/",

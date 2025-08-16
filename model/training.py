@@ -317,7 +317,7 @@ def checkpoint_save(checkpoint_path, epoch, mean_v_acc,
 
 
 def train_randlanet_model(train_set_list, test_set_list, hyperpars, use_mlflow=False,
-                          num_workers=4, model_name=None):
+                          num_workers=4, model_name=None, dataset_cls=RandlanetDataset):
     """
         Function for training randlanet using provided point clouds filepath
         as train and test sets. Logs metrics to mlflow if use_mlflow==True.
@@ -331,6 +331,7 @@ def train_randlanet_model(train_set_list, test_set_list, hyperpars, use_mlflow=F
         num_workers: number of parallel pytorch workers to load data
         learning_rate: learning rate for training
         model_name: name of the model folder. If None, timestamp is used
+        dataset_cls: dataset class to instantiate (defaults to RandlanetDataset)
 
     """
 
@@ -358,12 +359,12 @@ def train_randlanet_model(train_set_list, test_set_list, hyperpars, use_mlflow=F
     check_create_folder(output_path)
     check_create_folder(checkpoint_path)
 
-    train_set = RandlanetDataset(train_set_list, **hyperpars)
+    train_set = dataset_cls(train_set_list, **hyperpars)
     train_sampler = RandlanetWeightedSampler(
         train_set, hyperpars['batch_size'] * hyperpars['train_steps'])
     train_loader = data.DataLoader(
         train_set, sampler=train_sampler, **train_params)
-    test_set = RandlanetDataset(test_set_list, **hyperpars)
+    test_set = dataset_cls(test_set_list, **hyperpars)
     test_sampler = RandlanetWeightedSampler(
         test_set, hyperpars['val_batch_size'] * hyperpars['val_steps'])
     test_loader = data.DataLoader(
